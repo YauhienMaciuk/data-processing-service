@@ -70,6 +70,11 @@ Kafka output, keyed by `destinationId`:
 - `record-notifications`: `{"record": {...}, "previousRecords": {"count": 2, "totals": {"EUR": 70.25}, "firstTime": "...", "lastTime": "..."}}`
 - `record-alerts`: `{"record": {...}, "threshold": 10000}`
 
+`previousRecords` summarizes the records processed before this one with the same `destinationId` and `reference`; records
+without a reference are summarized together. Alert thresholds are set per unit in `application.properties`
+(`records.alerts.thresholds[EUR]=10000`), since one number can't fit both EUR and kg. A unit without a threshold never
+alerts.
+
 Invalid input messages go to `records-dlt`.
 
 ## Design choices
@@ -80,7 +85,7 @@ Invalid input messages go to `records-dlt`.
 | PostgreSQL                                                 | Storing a record and its events must be all-or-nothing, which needs transactions. SQL handles the aggregation query. About 28 records/s fits one instance easily.                                                                                              |
 | `record_id` primary key + `INSERT … ON CONFLICT DO NOTHING` | Idempotency in one atomic statement: a redelivered or concurrent duplicate is skipped, so each record is processed once.                                                                                                                                        |
 | One transaction per record                                 | The record, its summary and its events are saved together or not at all. The Kafka offset is committed afterwards: after a crash the record is delivered again and skipped as a duplicate.                                                                     |
-| Transactional outbox                                       | No event is lost, and none is sent for a rolled-back record. The relay sends one message at a time, so order is kept.                                                                                                                                          |
+| Transactional outbox                                       | No event is lost, and none is sent for a rolled-back record. The relay sends one message at a time, so order is kept. Delivery is at-least-once: after a crash between sending an event and deleting it from the outbox, the event is sent again, so consumers skip events whose `recordId` they have already seen. |
 | Running summary table                                      | The "previous records" summary is one row per destination and reference, locked and updated with each record. It costs about 1 ms however long the history is, and stays correct when records arrive together. Re-reading the history took 59 ms at 1M records and gave wrong counts under concurrency. |
 | Cursor (keyset) pagination, totals in SQL                  | A page takes about 0.05 ms, however deep. Totals are computed over all matching records, in the same database snapshot as the page.                                                                                                                             |
 | Only the indexes the queries use                           | Checked against real query plans on one day of data (2.4M records). Every query uses an index, and no unused index slows down inserts.                                                                                                                          |
